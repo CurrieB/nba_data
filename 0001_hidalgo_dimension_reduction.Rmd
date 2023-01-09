@@ -1,0 +1,579 @@
+---
+title: "ID in basketball"
+author: 
+- "Edgar Santos Fernandez"
+- "Francesco Denti"
+- "Kerrie Mengersen"
+- "Antonietta Mira"
+date: "2/6/2020"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+This file contains intructions to reproduce some of the results in the article
+"The role of intrinsic dimension in high-resolution player tracking data - Insights in basketball".
+
+
+
+```{r, eval = T, echo =F}
+.libPaths( c( "~/R_LIBS" , .libPaths() ) )
+setwd("~/Desktop/Research/VRES")
+```
+
+```{r, eval = T, message=F, warning=F}
+library(data.table)
+library(Rcpp)
+library(RcppArmadillo)
+library(farver)
+library(ggplot2)
+library(mvtnorm)
+library(dplyr)
+library(reshape2)
+library(plot3D)
+library(Matrix)
+library(superheat)
+library(mcclust)
+library(RCurl)
+library(jsonlite)
+library(sp)
+library(zoo)
+library(lubridate)
+library(stringr)
+library(gridExtra)
+library(grid)
+library(RColorBrewer)
+library(ggrepel)
+library(viridis)
+library(tidyr)
+
+```
+
+```{r, eval = T, message=F, warning=F}
+# TODO:
+# - Finish visualisation of player movements over time
+# - Characterisation of players position in space
+# - Adapt script to automatically take NBA dataset, create gifs of each play, store hidalgo stuff, 
+#   and other properties of the players in the play
+# - Create aggregate statistics about the game - points scored, where they were scored, by whom, path to generate a shot
+```
+Hidalgo is implemented in C++ and the sampler and other functions are located in the file ```Hidalgo_Code.cpp```. 
+Other useful functions from files ```Helpers_Code.R```  and ```plot functions.R``` need also to be sourced. 
+
+
+```{r, eval = T, message=F, warning=F}
+Rcpp::sourceCpp("./Code/Hidalgo_Code.cpp")
+source("./Code/Helpers_Code.R")
+source('./Code/plot functions.R')
+```
+
+The most of the movement data from the game is on the file ```CLEatGSW.RDS```.
+
+```{r, eval = T}
+allm <- readRDS("CLEatGSW.RDS")
+allm$descrip <- ifelse(!is.na(allm$HOMEDESCRIPTION), as.character(allm$HOMEDESCRIPTION), as.character(allm$VISITORDESCRIPTION))
+
+# selecting shot made and missed
+allm <- dplyr::filter(allm, EVENTMSGTYPE %in% c(1,2) )
+
+
+select_id <- function(all.movements = all.movements, id = id){
+  e1 <- dplyr::filter(all.movements, event.id == id) 
+  e1$x_loc <- as.numeric(as.character(e1$x_loc))
+  e1$y_loc <- as.numeric(as.character(e1$y_loc))
+  e1$shot_clock <- as.numeric(as.character(e1$shot_clock))
+  e1$shot_clock2 <- round(e1$shot_clock,1)
+  e1 <- dplyr::arrange(e1, datetime2)
+  
+  e1$ii <- 1
+  e1 <- e1 %>% dplyr::mutate(act = ifelse(shot_clock2 > lag(shot_clock2), ii + 1,ii)) # need to split actions because multiple actions are mingled
+  
+  breaks <- c(ymd_hms('2010-01-01 00:00:00'), e1[which(e1$act == 2),]$datetime2, Sys.time())
+  e1$action <- cut.POSIXt(e1$datetime2, breaks = breaks, labels = 1:(length(breaks)-1))
+  
+  e1 <- dplyr::filter(e1, shot_clock2 < 24)
+  e1 <- e1 %>% dplyr::group_by(event.id) %>%  dplyr::mutate(ids = dplyr::row_number())
+  
+}
+
+
+# table with the action to be used.
+# this was done manually because many events have issues with the clock
+# 
+table_fixing_clock <- read.csv('across plays fixing clock issues.csv')
+table_fixing_clock$quarter <- factor(table_fixing_clock$quarter)
+table_fixing_clock$EVENTMSGTYPE <- factor(table_fixing_clock$EVENTMSGTYPE)
+
+allm$EVENTMSGTYPE <- droplevels(allm$EVENTMSGTYPE)
+allm$ball_possession <- factor(allm$ball_possession)
+
+allm <- allm %>% left_join(table_fixing_clock, by = c('event.id', 'quarter', 'EVENTMSGTYPE', 'ball_possession'))
+
+# will exclude the plays with issues according to the visualization done with assess
+
+allm <- dplyr::filter(allm, comment != 'e')
+
+```
+
+```{r, eval = T}
+unique_events <- allm %>% 
+                 dplyr::select(event.id, EVENTMSGTYPE, ball_possession, quarter, descrip, SCORE) %>% 
+                 distinct() %>%
+                 mutate(scored_on_play = case_when(is.na(SCORE) ~ 0,
+                                                   TRUE ~ 1))
+
+ev <- unique(allm$event.id) # events
+
+
+# computing ID for event 6 
+#i = 7
+i = 1
+
+s15 <- select_id(all.movements = allm, id = ev[i]) 
+s15 <- filter(s15, action == table_fixing_clock[table_fixing_clock$event.id == ev[i],]$action)
+
+if(unique(s15$quarter) %in% c(1,2) ){
+  if(unique(s15$ball_possession) == 'home') { 
+         s15 <- filter(s15, datetime2 > min(filter(s15, lastname == 'ball', x_loc < 47)$datetime2))
+         }
+if(unique(s15$ball_possession) == 'away') {
+         s15 <- filter(s15, datetime2 > min(filter(s15, lastname == 'ball', x_loc > 47)$datetime2))
+       }
+    }
+
+
+#filter offensive court only
+if(unique(s15$quarter) %in% c(3,4) ){
+      if(unique(s15$ball_possession) == 'home') { 
+        s15 <- filter(s15, datetime2 > min(filter(s15, lastname == 'ball', x_loc > 47)$datetime2))
+      }
+if(unique(s15$ball_possession) == 'away') {
+        s15 <- filter(s15, datetime2 > min(filter(s15, lastname == 'ball', x_loc < 47)$datetime2))
+      }
+}
+
+
+```
+
+
+```{r, eval = T}
+
+stamps <- unique(s15$datetime2)[seq(1, length(unique(s15$datetime2)), by = 10)] 
+unique(s15$lastname)
+
+# Save stamps for later
+stampsSave <- data.frame(stamps)
+
+s15 <- filter(s15, datetime2 %in% stamps) %>% dplyr::arrange(event.id, datetime2, team, lastname)
+  
+s15$team <- as.character(s15$team)
+  #levels(s15$team) <- c('away', 'home', 'ball')
+s15$team <- ifelse(is.na(s15$team) , 'ball', s15$team)
+####################
+
+  s15$x <- s15$x_loc
+  s15$y <- s15$y_loc
+  s15$player <-  rep(c(paste0('a', 1:5), paste0('h', 1:5), 'ball') , times = round(nrow(s15)/11))[1:nrow(s15)]
+
+  s15 <- s15 %>% arrange(player, datetime2)
+  s15$stamp <- rep(1:length(stamps),times = 11)
+  
+  s15 <- s15 %>% dplyr::group_by(player, lastname) %>% 
+    dplyr::mutate(dist = sqrt( (x-lag(x)) ^ 2 + (y - lag(y)) ^ 2) ) #%>% dplyr::group_by(player, shot_clock) 
+
+  if(unique(s15$ball_possession) == 'home') { 
+     players <-  c("ball", unique(s15[s15$team == 'home',]$lastname))}
+  
+  if(unique(s15$ball_possession) == 'away') { 
+    players <-  c("ball", unique(s15[s15$team == 'away',]$lastname))}
+  
+  if(unique(s15$ball_possession) == 'home') { 
+    players2 <-  c(unique(s15[s15$team == 'away',]$lastname))}
+  
+  if(unique(s15$ball_possession) == 'away') { 
+    players2 <-  c(unique(s15[s15$team == 'home',]$lastname))}
+  
+s15$lastname <- factor(s15$lastname)
+
+colp <- brewer.pal(12, "Paired")[c(6, 2,4,8, 10,12)]
+
+# plotting the movement of the players on attack
+# https://youtu.be/jb57MFQLoRo?t=17
+
+# Plot for the home team with the ball
+p1 <- P_180 + 
+      geom_point(data = dplyr::filter(s15,lastname %in% players ), aes(x_loc, -y_loc, group = lastname, col = lastname, shape = team), size =1 ) + 
+      geom_path(data = dplyr::filter(s15,lastname %in% players), aes(x_loc, -y_loc, group = lastname, col = lastname), size = 0.3) +
+      geom_text(data = dplyr::filter(s15,lastname %in% players), aes(x_loc, -y_loc+1, label = stamp, col = lastname), size = 1.5)+
+      scale_color_manual(values = colp) +
+      theme_bw() + ggtitle(paste0('event_id = ', unique(s15$event.id))) 
+
+# Plot for the other team without ball
+p1_other <- P_180 + 
+            geom_point(data = dplyr::filter(s15,lastname %in% players2), aes(x_loc, -y_loc, group = lastname, col = lastname, shape = team), size =1 ) + 
+            geom_path(data = dplyr::filter(s15,lastname %in% players2), aes(x_loc, -y_loc, group = lastname, col = lastname), size = 0.3) +
+            geom_text(data = dplyr::filter(s15,lastname %in% players2), aes(x_loc, -y_loc+1, label = stamp, col = lastname), size = 1.5)+
+            scale_color_manual(values = colp) +
+            theme_bw() + ggtitle(paste0('event_id = ', unique(s15$event.id))) 
+
+# Visualise the home and away teams
+grid.arrange(p1, p2, nrow = 2, ncol = 1, heights=c(10,5), widths=c(11))
+
+dev.copy(jpeg,filename="Temp - Offense.jpg");
+dev.off ();
+
+grid.arrange(p1_other, p2, nrow = 2, ncol = 1, heights=c(10,5), widths=c(11))
+
+dev.copy(jpeg,filename="Temp - Defense.jpg");
+dev.off ();
+
+
+```
+  
+```{r, eval = T, cache = T}
+dist_stamp <- s15 %>% dplyr::group_by(datetime2) %>%
+    dplyr::summarize(dist = sum(dist, na.rm = T))
+
+curryPosition <- s15 %>%
+                 subset(firstname == "Stephen")
+
+kyriePosition <- s15 %>%
+                 subset(firstname == "Kyrie")
+
+klovePosition <- s15 %>%
+                 subset(firstname == "Kevin")
+  
+s15_ <- data.table::dcast(setDT(s15), event.id + quarter + EVENTMSGTYPE+
+                EVENTMSGACTIONTYPE + SCORE + SCOREMARGIN + HOMEDESCRIPTION +
+                VISITORDESCRIPTION + datetime2 + shot_clock + game_clock ~ player, value.var=c("x", "y", "radius"))
+  
+s15_ <- s15_ %>% dplyr::select(-c("radius_a1","radius_a2","radius_a3", "radius_a4","radius_a5","radius_h1",        
+                                "radius_h2","radius_h3","radius_h4","radius_h5") )
+
+s15_ <- as.data.frame(s15_)
+  
+#vars <- c(names(s15_)[grepl('_h', names(s15_))] , names(s15_)[grepl('_a', names(s15_))], "x_ball", "y_ball")  
+vars <- c(names(s15_)[grepl('_h', names(s15_))] , names(s15_)[grepl('_a', names(s15_))])  
+
+DATA <- s15_[, vars] 
+```
+
+Applying HIDALGO to the movement data with dimension D = 20. 
+```{r, eval = T, cache = T}
+## Declare Hidalgo Parameters
+nsim = 20000 # simulations
+burn_in = 10000 # burn in period
+L      <- 3 
+Lista <- data.preprocessing(DATA, q = 3) # computes the mus
+
+# Apply Hidalgo
+out3R   <- HIDALGO(mu_obser = Lista[[1]],
+                       L = L,
+                       NSIM = nsim, 
+                       burn_in = burn_in,
+                       thinning = 1, 
+                       verbose = F, verbose_step = 1000,
+                       a0_d = 2, b0_d = 1, Nq = Lista[[2]],
+                       q = Lista[[3]],CSI = .75, 
+                       t1 = .5, t2 = .001,REPULSIVE = T,
+                       alpha = rep(1,L),D = 20,TRUNC = F)
+  
+tracked_d3R=Tracking(out3R$AC,out3R$AD, N = nrow(DATA), NSIM = nsim)
+
+ID <- apply(tracked_d3R,1,median)
+```
+
+Plotting the ID accross time stamps:
+
+```{r, eval = T, cache = T}    
+df15 <- data.frame(id = ID, i = 1:length(ID))
+ 
+p2 <- ggplot(df15) + 
+  geom_line(aes(y = id, x = i, col = id), size = 1.5)+
+  scale_color_viridis()+
+  xlab('frame')+ ylab('ID')+
+  theme_bw() 
+
+grid.arrange(p1, p2, nrow = 2, ncol = 1, heights=c(10,5), widths=c(11))
+
+dev.copy(jpeg,filename="Temp - Offense.jpg");
+dev.off ();
+
+grid.arrange(p1_other, p2, nrow = 2, ncol = 1, heights=c(10,5), widths=c(11))
+
+dev.copy(jpeg,filename="Temp - Defense.jpg");
+dev.off ();
+
+```
+
+
+```{r, eval = T}
+grid.arrange(p1, p2, nrow = 2, ncol = 1, heights=c(10,5), widths=c(11))
+```
+
+Heatmap of the posterior similarity matrix of the play:
+
+```{r, eval = T}
+M_away <- mcclust::comp.psm(t(out3R$AC))
+set.seed(2020)
+superheat::superheat(M_away, 
+                            smooth.heat = T,
+                            legend = T,
+                            bottom.label.size = .15,
+                            left.label.size = .15,
+                            bottom.label.text.size = 3,
+                            left.label.text.size = 3,
+                            left.label.text.angle = 0,
+                            bottom.label.text.angle = 90 )
+
+```
+Try and say something spatially about where each player is relative to the other players:
+
+```{r, eval = T}
+
+# Attach back the intrinsic dimension to the main data
+# Get the rate of change of distance - help visualise when a pass has occurred 
+
+
+newData <- s15_ %>% 
+           cbind(ID) %>%
+           mutate(seconds_elapsed = as.numeric(abs(shot_clock - lag(shot_clock))),
+                  # Player velocities
+                  ball_velocity = sqrt((x_ball-lag(x_ball))^2 + (y_ball-lag(y_ball))^2)/seconds_elapsed,
+                  h1_velocity = sqrt((x_h1-lag(x_h1))^2 + (y_h1-lag(y_h1))^2)/seconds_elapsed,
+                  h2_velocity = sqrt((x_h2-lag(x_h2))^2 + (y_h2-lag(y_h2))^2)/seconds_elapsed,
+                  h3_velocity = sqrt((x_h3-lag(x_h3))^2 + (y_h3-lag(y_h3))^2)/seconds_elapsed,
+                  h4_velocity = sqrt((x_h4-lag(x_h4))^2 + (y_h4-lag(y_h4))^2)/seconds_elapsed,
+                  h5_velocity = sqrt((x_h5-lag(x_h5))^2 + (y_h5-lag(y_h5))^2)/seconds_elapsed,
+                  a1_velocity = sqrt((x_a1-lag(x_a1))^2 + (y_a1-lag(y_a1))^2)/seconds_elapsed,
+                  a2_velocity = sqrt((x_a2-lag(x_a2))^2 + (y_a2-lag(y_a2))^2)/seconds_elapsed,
+                  a3_velocity = sqrt((x_a3-lag(x_a3))^2 + (y_a3-lag(y_a3))^2)/seconds_elapsed,
+                  a4_velocity = sqrt((x_a4-lag(x_a4))^2 + (y_a4-lag(y_a4))^2)/seconds_elapsed,
+                  a5_velocity = sqrt((x_a5-lag(x_a5))^2 + (y_a5-lag(y_a5))^2)/seconds_elapsed)
+
+player_distance_matrix <- newData %>%
+                          select(x_a1:y_h5) 
+
+ball_matrix <- player_distance_matrix %>%
+               select(subset = c(x_ball,
+                                 y_ball))
+
+player_distance_matrix <- player_distance_matrix %>%
+                          select(subset = -c(x_ball,
+                                             y_ball))
+
+# Nuke data made in the next step
+newData <- newData[, 1:47]
+
+# Hard code net coordinates for now. Need these to characterize how a player moves towards the basket
+# e.g. have they broken away from their defender. This is only specific to unique_events row 7. No 
+# idea how it stacks up with other plays
+
+basket_x <- 5.2
+basket_y <- 25
+
+
+# Do distance of players from each other
+for (i in 1:10) {
+
+    for (j in 1:10) {
+
+        temp_x <- as.data.frame(player_distance_matrix[,i] - player_distance_matrix[,j])
+        temp_y <- as.data.frame(player_distance_matrix[,i+10] - player_distance_matrix[,j+10])
+        temp_abs <- sqrt(temp_x^2 + temp_y^2)
+        
+        if (i <= 5) {
+            if (j <= 5) {
+                colnames(temp_x) <- paste0("x_a", i, "_rel_a",j)
+                colnames(temp_y) <- paste0("y_a", i, "_rel_a",j)
+                colnames(temp_abs) <- paste0("abs_a", i, "_rel_a",j)
+            } else {
+                colnames(temp_x) <- paste0("x_a", i, "_rel_h",j-5)
+                colnames(temp_y) <- paste0("y_a", i, "_rel_h",j-5)
+                colnames(temp_abs) <- paste0("abs_a", i, "_rel_h",j-5)
+            }
+        } else {
+            if (j <= 5) {
+                colnames(temp_x) <- paste0("x_h", i-5, "_rel_a",j)
+                colnames(temp_y) <- paste0("y_h", i-5, "_rel_a",j)
+                colnames(temp_abs) <- paste0("abs_h", i-5, "_rel_a",j)
+            } else {
+                colnames(temp_x) <- paste0("x_h", i-5, "_rel_h",j-5)
+                colnames(temp_y) <- paste0("y_h", i-5, "_rel_h",j-5)
+                colnames(temp_abs) <- paste0("abs_h", i-5, "_rel_h",j-5)
+            }
+        }
+        
+        newData <- cbind(newData, temp_x)
+        newData <- cbind(newData, temp_y)
+        newData <- cbind(newData, temp_abs)
+    }
+  
+    # Get Draymond's distance from the basket
+    temp_x <- as.data.frame(player_distance_matrix[,i] - ball_matrix[,1])
+    temp_y <- as.data.frame(player_distance_matrix[,i+10] - ball_matrix[,2])
+    temp_abs <- sqrt(temp_x^2 + temp_y^2)
+  
+    if (i <= 5) {
+        colnames(temp_x) <- paste0("x_h", i-5, "_rel_ball")
+        colnames(temp_y) <- paste0("y_h", i-5, "_rel_ball")
+        colnames(temp_abs) <- paste0("abs_h", i-5, "_rel_ball")
+    } else {
+        colnames(temp_x) <- paste0("x_h", i-5, "_rel_ball")
+        colnames(temp_y) <- paste0("y_h", i-5, "_rel_ball")
+        colnames(temp_abs) <- paste0("abs_h", i-5, "_rel_ball")
+    }
+    
+    newData <- cbind(newData, temp_x)
+    newData <- cbind(newData, temp_y)
+    newData <- cbind(newData, temp_abs)
+    
+    # Get Draymond's distance from the ball
+    temp_x <- as.data.frame(player_distance_matrix[,i] - basket_x)
+    temp_y <- as.data.frame(player_distance_matrix[,i+10] - basket_y)
+    temp_abs <- sqrt(temp_x^2 + temp_y^2)
+  
+    if (i <= 5) {
+        colnames(temp_x) <- paste0("x_h", i-5, "_rel_basket")
+        colnames(temp_y) <- paste0("y_h", i-5, "_rel_basket")
+        colnames(temp_abs) <- paste0("abs_h", i-5, "_rel_basket")
+    } else {
+        colnames(temp_x) <- paste0("x_h", i-5, "_rel_basket")
+        colnames(temp_y) <- paste0("y_h", i-5, "_rel_basket")
+        colnames(temp_abs) <- paste0("abs_h", i-5, "_rel_basket")
+    }
+    
+    newData <- cbind(newData, temp_x)
+    newData <- cbind(newData, temp_y)
+    newData <- cbind(newData, temp_abs)
+    
+}
+
+# For each player, visualise it's distance from the other players at one time point
+# TODO: Make animation, for each player, of their relative distance to the other players.
+
+draymond_x <- newData %>%
+              select(contains("x_h3"))
+
+draymond_y <- newData %>%
+              select(contains("y_h3"))
+
+bogut_x <- newData %>%
+           select(contains("x_h1_"))
+
+bogut_y <- newData %>%
+           select(contains("y_h1_"))
+
+draymond_abs <- newData %>%
+                select(contains("abs_h3")) 
+
+draymond_abs_2 <- cbind(draymond_abs,
+                  as.data.frame(newData$shot_clock)) %>%
+                  gather(key="Player", value="Distance", abs_h3_rel_a1:abs_h3_rel_basket) %>%
+                  mutate(Player = case_when(Player == "abs_h3_rel_h1" ~ "Green Relative to Bogut",
+                                            Player == "abs_h3_rel_h2" ~ "Green Relative to Curry",
+                                            Player == "abs_h3_rel_h3" ~ "Green Relative to Green",
+                                            Player == "abs_h3_rel_h4" ~ "Green Relative to Rush",
+                                            Player == "abs_h3_rel_h5" ~ "Green Relative to Thompson",
+                                            Player == "abs_h3_rel_a1" ~ "Green Relative to Irving",
+                                            Player == "abs_h3_rel_a2" ~ "Green Relative to James",
+                                            Player == "abs_h3_rel_a3" ~ "Green Relative to Love",
+                                            Player == "abs_h3_rel_a4" ~ "Green Relative to Mozgov",
+                                            Player == "abs_h3_rel_a5" ~ "Green Relative to Smith",
+                                            Player == "abs_h3_rel_basket" ~ "Green Relative to Basket",
+                                            Player == "abs_h3_rel_ball" ~ "Green Relative to Ball")) 
+
+colnames(draymond_abs_2) <- c("ShotClock", "Player", "Distance")
+
+
+# Visualise Draymonds distance from other players
+draymond_distance <- ggplot(draymond_abs_2) + 
+                     geom_line(aes(y = Distance, x = 24 - ShotClock, col=Player, group=Player), size = 1.5) +
+                     xlab('Play Time Elapsed (s)') + ylab('Distance from Other Players (m)') +
+                     ggtitle("Draymond Distance to Other Players") +
+                     theme_bw() 
+
+plot(draymond_distance)
+
+```
+
+Heatmap of the posterior similarity matrix of the play:
+
+```{r, eval = T}
+           
+newData_T <- newData %>%
+             gather(key="Player", value="Velocity", h1_velocity:a5_velocity) %>%
+             mutate(Player = case_when(Player == "h1_velocity" ~ "Bogut",
+                                       Player == "h2_velocity" ~ "Curry",
+                                       Player == "h3_velocity" ~ "Green",
+                                       Player == "h4_velocity" ~ "Rush",
+                                       Player == "h5_velocity" ~ "Thompson",
+                                       Player == "a1_velocity" ~ "Irving",
+                                       Player == "a2_velocity" ~ "James",
+                                       Player == "a3_velocity" ~ "Love",
+                                       Player == "a4_velocity" ~ "Mozgov",
+                                       Player == "a5_velocity" ~ "Smith"))
+
+
+
+# Plot ID against ball velocity
+p3 <- ggplot(newData) + 
+      geom_line(aes(y = ball_velocity, x = ID, col = ID), size = 1.5) +
+      scale_color_viridis() +
+      xlab('ID') + ylab('Ball Velocity')+
+      theme_bw() 
+
+p4 <- ggplot(newData_T %>%
+      subset(Player == "Bogut")) + 
+      geom_line(aes(y = Velocity, x = ID, colour = Player, group=Player), size = 1.5) + 
+      xlab('Shot Clock Time') + ylab('Player Velocity')+
+      theme_bw()
+
+p5 <- ggplot(newData_T %>%
+      subset(Player == "Curry")) + 
+      geom_line(aes(y = Velocity, x = ID, colour = Player, group=Player), size = 1.5) + 
+      xlab('Shot Clock Time') + ylab('Player Velocity')+
+      theme_bw()
+
+p6 <- ggplot(newData_T %>%
+      subset(Player == "Green")) + 
+      geom_line(aes(y = Velocity, x = ID, colour = Player, group=Player), size = 1.5) + 
+      xlab('Shot Clock Time') + ylab('Player Velocity')+
+      theme_bw()
+
+p7 <- ggplot(newData_T %>%
+      subset(Player == "Rush")) + 
+      geom_line(aes(y = Velocity, x = ID, colour = Player, group=Player), size = 1.5) + 
+      xlab('Shot Clock Time') + ylab('Player Velocity')+
+      theme_bw()
+
+p8 <- ggplot(newData_T %>%
+      subset(Player == "Thompson")) + 
+      geom_line(aes(y = Velocity, x = ID, colour = Player, group=Player), size = 1.5) + 
+      xlab('Shot Clock Time') + ylab('Player Velocity')+
+      theme_bw()
+
+plot(p3)
+plot(p4)
+plot(p5)
+plot(p6)
+plot(p7)
+plot(p8)
+
+
+```
+
+Spread data back out and see if the velocities at certain time points are correlated:
+
+```{r, eval = T}
+
+
+
+```

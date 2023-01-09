@@ -1,0 +1,245 @@
+---
+title: "0000_data_cleaning"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, eval = T, echo =F}
+.libPaths( c( "~/R_LIBS" , .libPaths() ) )
+setwd("~/Desktop/Research/VRES")
+```
+
+```{r, eval = T, message=F, warning=F}
+library(data.table)
+library(Rcpp)
+library(RcppArmadillo)
+library(farver)
+library(ggplot2)
+library(mvtnorm)
+library(dplyr)
+library(reshape2)
+library(plot3D)
+library(Matrix)
+library(superheat)
+library(mcclust)
+library(RCurl)
+library(jsonlite)
+library(sp)
+library(zoo)
+library(lubridate)
+library(stringr)
+library(gridExtra)
+library(grid)
+library(RColorBrewer)
+library(ggrepel)
+library(viridis)
+library(tidyr)
+
+```
+
+```{r, eval = T, message=F, warning=F}
+Rcpp::sourceCpp("./Code/Hidalgo_Code.cpp")
+source("./Code/Helpers_Code.R")
+source('./Code/plot functions.R')
+```
+
+
+## Clean Main Dataset
+
+```{r, eval = T}
+allm <- readRDS("CLEatGSW.RDS")
+allm$descrip <-ifelse(!is.na(allm$HOMEDESCRIPTION), as.character(allm$HOMEDESCRIPTION), as.character(allm$VISITORDESCRIPTION))
+
+allm <- dplyr::filter(allm, EVENTMSGTYPE %in% c(1,2) )
+
+select_id <- function(all.movements = all.movements, id = id){
+    e1 <- dplyr::filter(all.movements, event.id == id) 
+    e1$x_loc <- as.numeric(as.character(e1$x_loc))
+    e1$y_loc <- as.numeric(as.character(e1$y_loc))
+    e1$shot_clock <- as.numeric(as.character(e1$shot_clock))
+    e1$shot_clock2 <- round(e1$shot_clock,1)
+    e1 <- dplyr::arrange(e1, datetime2)
+    
+    e1$ii <- 1
+    e1 <- e1 %>% dplyr::mutate(act = ifelse(shot_clock2 > lag(shot_clock2), ii + 1,ii)) # need to split actions because multiple actions are mingled
+    
+    breaks <- c(ymd_hms('2010-01-01 00:00:00'), e1[which(e1$act == 2),]$datetime2, Sys.time())
+    e1$action <- cut.POSIXt(e1$datetime2, breaks = breaks, labels = 1:(length(breaks)-1))
+    
+    e1 <- dplyr::filter(e1, shot_clock2 < 24)
+    e1 <- e1 %>% dplyr::group_by(event.id) %>%  dplyr::mutate(ids = dplyr::row_number())
+  
+}
+
+table_fixing_clock <- read.csv('across plays fixing clock issues.csv')
+table_fixing_clock$quarter <- factor(table_fixing_clock$quarter)
+table_fixing_clock$EVENTMSGTYPE <- factor(table_fixing_clock$EVENTMSGTYPE)
+
+allm$EVENTMSGTYPE <- droplevels(allm$EVENTMSGTYPE)
+allm$ball_possession <- factor(allm$ball_possession)
+
+allm <- allm %>% left_join(table_fixing_clock, by = c('event.id', 'quarter', 'EVENTMSGTYPE', 'ball_possession'))
+
+# will exclude the plays with issues according to the visualization done with assess
+
+allm <- dplyr::filter(allm, comment != 'e')
+
+```
+
+## List distinct events during game
+```{r, eval = T}
+unique_events <- allm %>% 
+                 dplyr::select(event.id, EVENTMSGTYPE, ball_possession, quarter, descrip, SCORE) %>% 
+                 distinct() %>%
+                 mutate(scored_on_play = case_when(is.na(SCORE) ~ 0,
+                                                   TRUE ~ 1))
+
+ev <- unique(allm$event.id) # events
+
+
+```
+
+## Plot plays for a given player
+```{r, eval = T}
+
+
+
+```
+
+## Clean main dataset further for individual play info
+```{r, eval = T}
+
+
+#
+# calculate_play - Function to calculate ID value for every play
+#
+#
+#
+#
+
+more_cleaning <- function() {
+    # Only snatch every 10th frame (convert from 25fps to 2.5fps)
+    stamps <- unique(s15$datetime2)[seq(1, length(unique(s15$datetime2)), by = 10)] 
+    
+    # Save stamps for later
+    stampsSave <- data.frame(stamps)
+    
+    s15 <- filter(s15, datetime2 %in% stamps) %>% dplyr::arrange(event.id, datetime2, team, lastname)
+    
+    # Change ball to be it's own team
+    s15$team <- as.character(s15$team)
+    s15$team <- ifelse(is.na(s15$team) , 'ball', s15$team)
+    
+    s15$x <- s15$x_loc
+    s15$y <- s15$y_loc
+    s15$player <-  rep(c(paste0('a', 1:5), paste0('h', 1:5), 'ball') , times = round(nrow(s15)/11))[1:nrow(s15)]
+    
+    s15 <- s15 %>% arrange(player, datetime2)
+    s15$stamp <- rep(1:length(stamps),times = 11)
+    
+    s15 <- s15 %>% 
+           dplyr::group_by(player, lastname) %>% 
+           dplyr::mutate(dist = sqrt( (x-lag(x)) ^ 2 + (y - lag(y)) ^ 2))
+    
+    if(unique(s15$ball_possession) == 'home') { 
+        players <- c("ball", unique(s15[s15$team == 'home',]$lastname))
+        players2 <- c(unique(s15[s15$team == 'away',]$lastname))
+    }
+    
+    if(unique(s15$ball_possession) == 'away') { 
+        players <- c("ball", unique(s15[s15$team == 'away',]$lastname))
+        players2 <- c(unique(s15[s15$team == 'home',]$lastname))
+    }
+    
+    s15$lastname <- factor(s15$lastname)
+    
+    colp <- brewer.pal(12, "Paired")[c(6, 2,8,2,2,2,8,2, 8,8,8)]
+
+}
+
+calculate_play <- function(i) {
+  
+    s15 <- select_id(all.movements = allm, id = ev[i]) 
+    s15 <- filter(s15, action == table_fixing_clock[table_fixing_clock$event.id == ev[i],]$action)
+    
+    # Keep only the parts of the play that occur in the halfcourt
+
+    # First half
+    if(unique(s15$quarter) %in% c(1,2) ){
+        if(unique(s15$ball_possession) == 'home') { 
+              s15 <- filter(s15, datetime2 > min(filter(s15, lastname == 'ball', x_loc < 47)$datetime2))
+        }
+        if(unique(s15$ball_possession) == 'away') {
+              s15 <- filter(s15, datetime2 > min(filter(s15, lastname == 'ball', x_loc > 47)$datetime2))
+        }
+    }
+    
+    #filter offensive court only
+    if(unique(s15$quarter) %in% c(3,4) ){
+        if(unique(s15$ball_possession) == 'home') { 
+            s15 <- filter(s15, datetime2 > min(filter(s15, lastname == 'ball', x_loc > 47)$datetime2))
+        }
+      
+        if(unique(s15$ball_possession) == 'away') {
+            s15 <- filter(s15, datetime2 > min(filter(s15, lastname == 'ball', x_loc < 47)$datetime2))
+        }
+    }
+    
+    # Clean some more
+    more_cleaning()
+    
+    # Generate gif of play
+    
+    P_180_2 <- ggplot(data=s15, aes(x=x_loc, y=-y_loc, group=lastname, col=lastname)) + 
+           geom_polygon(data = rotate_court(court, theta = pi/2), aes(x = x, y = y, group = group), col = "gray") +
+           coord_equal() +
+           xlim(-2,96) +
+           ylim(-55,2) +
+           scale_x_continuous(breaks = c(0, 23.5, 47, 70.5, 94)) +
+           scale_y_continuous(breaks = c(0, -12.5, -25, -37.5, -50)) +
+           xlab("") + ylab("") +
+           theme(axis.text.x = element_blank(),
+                 axis.text.y = element_blank(), axis.ticks.x = element_blank(),
+                 axis.ticks.y = element_blank(), axis.title = element_blank()
+           ) 
+
+    colp <- brewer.pal(12, "Paired")[c(6, 2,8,2,2,2,8,2, 8,8,8)]
+    
+    play_duration <- max(s15$shot_clock) - min(s15$shot_clock)
+    
+    P_TEST <- P_180_2 + 
+              #geom_point(data = s15, aes(x_loc, -y_loc, group = lastname, col = lastname, shape = team), size =4 ) + 
+              geom_path(data = s15, aes(x_loc, -y_loc, group = lastname, col = lastname), arrow = arrow(type = "closed", length = unit(0.03, "npc")), size = 0) +
+              geom_text(data = s15, aes(x_loc, -y_loc+2, label = lastname, col = lastname), size = 2.5)+
+              scale_color_manual(values = colp) +
+              theme_bw() + 
+              ggtitle(paste0('event_id = ', unique(s15$event.id))) 
+    
+    P_TEST_2 <- P_TEST + 
+                transition_reveal(24-shot_clock) +
+                exit_fade() + 
+                shadow_wake(wake_length = 0.2)
+    
+    
+    animate(P_TEST_2, nframes=length(s15), fps = 2.5, width = 1200, height = 800, renderer = gifski_renderer())
+    anim_save(paste0("./nba_data/www/", 'event_id_', unique(s15$event.id), ".gif"))
+    
+}
+
+for (i in 1:length(ev)) {
+  print(i)
+  calculate_play(i)
+}
+
+
+```
+
+## Clean main dataset further
+```{r, eval = T}
+
+
+```

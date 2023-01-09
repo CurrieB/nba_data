@@ -1,0 +1,60 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Plot A Play
+
+```{r pressure, echo=FALSE}
+
+library(gifski)
+library(transformr)
+library(gganimate)
+theme_set(theme_bw())
+
+setwd("~/Desktop/Research/VRES")
+
+# Run other scripts first
+
+# Add data to P_180
+P_180_2 <- ggplot(data=s15, aes(x=x_loc, y=-y_loc, group=lastname, col=lastname)) + 
+           geom_polygon(data = rotate_court(court, theta = pi/2), aes(x = x, y = y, group = group), col = "gray") +
+           coord_equal() +
+           xlim(-2,96) +
+           ylim(-55,2) +
+           scale_x_continuous(breaks = c(0, 23.5, 47, 70.5, 94)) +
+           scale_y_continuous(breaks = c(0, -12.5, -25, -37.5, -50)) +
+           xlab("") + ylab("") +
+           theme(axis.text.x = element_blank(),
+                 axis.text.y = element_blank(), axis.ticks.x = element_blank(),
+                 axis.ticks.y = element_blank(), axis.title = element_blank()
+           ) 
+
+colp <- brewer.pal(12, "Paired")[c(6, 2,8,2,2,2,8,2, 8,8,8)]
+
+play_duration <- max(s15$shot_clock) - min(s15$shot_clock)
+
+P_TEST <- P_180_2 + 
+          #geom_point(data = s15, aes(x_loc, -y_loc, group = lastname, col = lastname, shape = team), size =4 ) + 
+          geom_path(data = s15, aes(x_loc, -y_loc, group = lastname, col = lastname), arrow = arrow(type = "closed", length = unit(0.03, "npc")), size = 0) +
+          geom_text(data = s15, aes(x_loc, -y_loc+2, label = lastname, col = lastname), size = 2.5)+
+          scale_color_manual(values = colp) +
+          theme_bw() + 
+          ggtitle(paste0('event_id = ', unique(s15$event.id))) 
+
+P_TEST_2 <- P_TEST + 
+            transition_reveal(24-shot_clock) +
+            exit_fade() + 
+            shadow_wake(wake_length = 0.2)
+
+animate(P_TEST_2, nframes=40, fps = 2.5, width = 1200, height = 800, renderer = gifski_renderer())
+anim_save(paste0("./nba_data/www/", 'event_id_', unique(s15$event.id), ".gif"))
+
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
